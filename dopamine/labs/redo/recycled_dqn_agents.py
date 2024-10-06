@@ -203,7 +203,15 @@ class RecycledDQNAgent(dqn_agent.JaxDQNAgent):
     online_params = self.online_params
 
     if is_logging:
-      self._log_stats({'HuberLoss': float(loss)}, update_step)
+        self._log_stats({'HuberLoss': float(loss)}, update_step)
+
+        # 获取中间激活值并记录休眠神经元信息
+        intermediates = self.get_intermediates(online_params)
+        log_dict_neurons = self.weight_recycler.maybe_log_deadneurons(update_step, intermediates)
+
+        # 确保 log_dict_neurons 有内容才进行日志记录
+        if log_dict_neurons:
+            self._log_stats(log_dict_neurons, update_step)
 
     # Neuron/layer recycling starts if reset_mode is not None.
     # Otherwise, we log dead neurons over training for standard agent.

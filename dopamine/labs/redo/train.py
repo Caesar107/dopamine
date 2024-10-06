@@ -15,19 +15,21 @@
 r"""The entry point for running a Dopamine agent.
 
 """
+#import some library to cammand file log app
 from absl import app
 from absl import flags
 from absl import logging
 
-from dopamine.discrete_domains import run_experiment
-from dopamine.labs.atari_100k import eval_run_experiment
-from dopamine.labs.redo import recycled_atari100k_rainbow_agent
-from dopamine.labs.redo import recycled_dqn_agents
-from dopamine.labs.redo import recycled_rainbow_agent
+from dopamine.discrete_domains import run_experiment #运行强化学习任务。它将结合用户传入的命令行参数（如选择的代理、游戏环境等），并在实验过程中执行强化学习的核心步骤。
+from dopamine.labs.atari_100k import eval_run_experiment  #评估训练后的代理
+from dopamine.labs.redo import recycled_atari100k_rainbow_agent #Rainbow DQN 是一种增强的 DQN 算法
+from dopamine.labs.redo import recycled_dqn_agents  #另一类强化学习代理模型，基于经典的 DQN（Deep Q-Learning Network）算法，并通过回收和再利用神经元的策略（"ReDo" 算法）来改进模型的表现
+from dopamine.labs.redo import recycled_rainbow_agent 
 
 import gin
 import tensorflow as tf
 
+#控制训练的基础目录（base_dir）、配置文件路径、日志等
 ATARI_REPLAY_DIR = None
 
 flags.DEFINE_string('replay_dir', ATARI_REPLAY_DIR, 'Data dir.')
@@ -54,15 +56,14 @@ flags.DEFINE_multi_string(
 
 FLAGS = flags.FLAGS
 
-
-
+#根据传入的 agent_name 参数创建不同类型的代理
 @gin.configurable
 def create_agent_recycled(
     sess,
     environment,
     agent_name=None,
     summary_writer=None,
-    debug_mode=False,
+    debug_mode=True,#False,
 ):
   """Creates an agent.
 
@@ -101,7 +102,7 @@ def create_agent_recycled(
   else:
     raise ValueError('Unknown agent: {}'.format(agent_name))
 
-
+#创建 Runner，它用于控制训练和评估过程
 @gin.configurable
 def create_runner_recycled(
     base_dir,
