@@ -45,6 +45,7 @@ import numpy as np
 import tensorflow as tf
 import tqdm.auto as tqdm
 
+print("Debug: run_experiment.py loaded")
 
 def load_gin_configs(gin_files, gin_bindings):
   """Loads gin configuration files.
@@ -244,6 +245,7 @@ class Runner(object):
     self._base_dir = base_dir
     self._clip_rewards = clip_rewards
     self._create_directories()
+    self._global_step = 0  # 初始化全局步数计数器
 
     self._environment = create_environment_fn()
     # The agent is now in charge of setting up the session.
@@ -474,6 +476,7 @@ class Runner(object):
       num_episodes: int, The number of episodes run in this phase.
       average_reward: float, The average reward generated in this phase.
       average_steps_per_second: float, The average number of steps per second.
+      log_dict_neurons: dict, contains dead neurons data for training phase.
     """
     # Perform the training phase, during which the agent learns.
     self._agent.eval_mode = False
@@ -486,14 +489,20 @@ class Runner(object):
 
     # 新增部分：记录休眠神经元数量
     intermediates = self._agent.get_intermediates(self._agent.online_params)
-    log_dict_neurons = self._agent.weight_recycler.maybe_log_deadneurons(number_steps, intermediates)
+    # 调试信息
+    print("\n\nDebug - Intermediates:\n", intermediates, "\n\n")
+    log_dict_neurons = self._agent.weight_recycler.maybe_log_deadneurons(
+        self._global_step, intermediates
+    )
 
-    # 将每层的休眠神经元数量添加到统计数据中
+    # 调试信息
+    print("\n\nDebug - Entering Training Phase")
+    print("Training Phase - log_dict_neurons:", log_dict_neurons)
+
+    # 将每层的休眠神经元数量添加到统计数据中，并返回 log_dict_neurons
     if log_dict_neurons:
         for layer_name, dead_neuron_count in log_dict_neurons.items():
-            statistics.append({f'{layer_name}_dead_neurons': dead_neuron_count})
-
-
+            statistics.append({f'Train/{layer_name}_dead_neurons': dead_neuron_count})
 
     time_delta = time.time() - start_time
     average_steps_per_second = number_steps / time_delta
@@ -506,7 +515,8 @@ class Runner(object):
     logging.info(
         'Average training steps per second: %.2f', average_steps_per_second
     )
-    return num_episodes, average_return, average_steps_per_second
+    return num_episodes, average_return, average_steps_per_second, log_dict_neurons
+
 
   def _run_eval_phase(self, statistics):
     """Run evaluation phase.
@@ -518,6 +528,7 @@ class Runner(object):
     Returns:
       num_episodes: int, The number of episodes run in this phase.
       average_reward: float, The average reward generated in this phase.
+      log_dict_neurons: dict, contains dead neurons data for evaluation phase.
     """
     # Perform the evaluation phase -- no learning.
     self._agent.eval_mode = True
@@ -533,13 +544,22 @@ class Runner(object):
 
     # 新增部分：记录休眠神经元数量
     intermediates = self._agent.get_intermediates(self._agent.online_params)
-    log_dict_neurons = self._agent.weight_recycler.maybe_log_deadneurons(number_steps, intermediates)
+    print("\nDebug - Intermediates:\n", intermediates, "\n")
+    log_dict_neurons = self._agent.weight_recycler.maybe_log_deadneurons(
+        self._global_step, intermediates
+    )
 
+    # 调试信息
+    print("Evaluation Phase - log_dict_neurons:", log_dict_neurons)
+
+    # 将每层的休眠神经元数量添加到统计数据中，并返回 log_dict_neurons
     if log_dict_neurons:
         for layer_name, dead_neuron_count in log_dict_neurons.items():
-            statistics.append({f'{layer_name}_dead_neurons_eval': dead_neuron_count})
+            statistics.append({f'Eval/{layer_name}_dead_neurons': dead_neuron_count})
 
-    return num_episodes, average_return
+    return num_episodes, average_return, log_dict_neurons
+
+ 
 
   def _run_one_iteration(self, iteration):
     """Runs one iteration of agent/environment interaction.
@@ -557,50 +577,63 @@ class Runner(object):
     """
     statistics = iteration_statistics.IterationStatistics()
     logging.info('Starting iteration %d', iteration)
-    num_episodes_train, average_reward_train, average_steps_per_second = (
+
+    # 获取训练阶段的神经元数据
+    num_episodes_train, average_reward_train, average_steps_per_second, log_dict_neurons_train = (
         self._run_train_phase(statistics)
     )
-    num_episodes_eval, average_reward_eval = self._run_eval_phase(statistics)
+
+    # 获取评估阶段的神经元数据
+    num_episodes_eval, average_reward_eval, log_dict_neurons_eval = self._run_eval_phase(statistics)
 
     if self._has_collector_dispatcher:
-      self._collector_dispatcher.write([
-          statistics_instance.StatisticsInstance(
-              'Train/NumEpisodes', num_episodes_train, iteration
-          ),
-          statistics_instance.StatisticsInstance(
-              'Train/AverageReturns', average_reward_train, iteration
-          ),
-          statistics_instance.StatisticsInstance(
-              'Train/AverageStepsPerSecond', average_steps_per_second, iteration
-          ),
-          statistics_instance.StatisticsInstance(
-              'Eval/NumEpisodes', num_episodes_eval, iteration
-          ),
-          statistics_instance.StatisticsInstance(
-              'Eval/AverageReturns', average_reward_eval, iteration
-          ),
-      ])
+        self._collector_dispatcher.write([
+            statistics_instance.StatisticsInstance(
+                'Train/NumEpisodes', num_episodes_train, iteration
+            ),
+            statistics_instance.StatisticsInstance(
+                'Train/AverageReturns', average_reward_train, iteration
+            ),
+            statistics_instance.StatisticsInstance(
+                'Train/AverageStepsPerSecond', average_steps_per_second, iteration
+            ),
+            statistics_instance.StatisticsInstance(
+                'Eval/NumEpisodes', num_episodes_eval, iteration
+            ),
+            statistics_instance.StatisticsInstance(
+                'Eval/AverageReturns', average_reward_eval, iteration
+            ),
+        ])
+    
+    # 保存到 TensorBoard summaries
     if self._summary_writer is not None:
-      self._save_tensorboard_summaries(
-          iteration,
-          num_episodes_train,
-          average_reward_train,
-          num_episodes_eval,
-          average_reward_eval,
-          average_steps_per_second,
-      )
+        self._save_tensorboard_summaries(
+            iteration,
+            num_episodes_train,
+            average_reward_train,
+            num_episodes_eval,
+            average_reward_eval,
+            average_steps_per_second,
+            statistics,
+            log_dict_neurons_train=log_dict_neurons_train,
+            log_dict_neurons_eval=log_dict_neurons_eval,
+        )
+
     return statistics.data_lists
 
+
   def _save_tensorboard_summaries(
-      self,
-      iteration,
-      num_episodes_train,
-      average_reward_train,
-      num_episodes_eval,
-      average_reward_eval,
-      average_steps_per_second,
-      log_dict_neurons=None,  # 新增参数，传递休眠神经元信息
-  ):
+    self,
+    iteration,
+    num_episodes_train,
+    average_reward_train,
+    num_episodes_eval,
+    average_reward_eval,
+    average_steps_per_second,
+    statistics,
+    log_dict_neurons_train=None,
+    log_dict_neurons_eval=None,
+):
     """Save statistics as tensorboard summaries.
 
     Args:
@@ -610,65 +643,56 @@ class Runner(object):
       num_episodes_eval: int, number of evaluation episodes run.
       average_reward_eval: float, The average evaluation reward.
       average_steps_per_second: float, The average number of steps per second.
+      statistics: The statistics instance containing all recorded data.
+      log_dict_neurons_train: dict, contains dead neurons data for training phase.
+      log_dict_neurons_eval: dict, contains dead neurons data for evaluation phase.
     """
     if self._summary_writer is None:
-      return
+        return
 
     if self._sess is None:
-      with self._summary_writer.as_default():
-        tf.summary.scalar(
-            'Train/NumEpisodes', num_episodes_train, step=iteration
-        )
-        tf.summary.scalar(
-            'Train/AverageReturns', average_reward_train, step=iteration
-        )
-        tf.summary.scalar(
-            'Train/AverageStepsPerSecond',
-            average_steps_per_second,
-            step=iteration,
-        )
-        tf.summary.scalar('Eval/NumEpisodes', num_episodes_eval, step=iteration)
-        tf.summary.scalar(
-            'Eval/AverageReturns', average_reward_eval, step=iteration
-        )
+        with self._summary_writer.as_default():
+            tf.summary.scalar('Train/NumEpisodes', num_episodes_train, step=iteration)
+            tf.summary.scalar('Train/AverageReturns', average_reward_train, step=iteration)
+            tf.summary.scalar('Train/AverageStepsPerSecond', average_steps_per_second, step=iteration)
+            tf.summary.scalar('Eval/NumEpisodes', num_episodes_eval, step=iteration)
+            tf.summary.scalar('Eval/AverageReturns', average_reward_eval, step=iteration)
 
-        # 新增部分：记录休眠神经元数量
-        if log_dict_neurons:  # 确保 log_dict_neurons 不为空
-            for neuron_layer, dead_neuron_count in log_dict_neurons.items():
-                tf.summary.scalar(f'DeadNeurons/{neuron_layer}', dead_neuron_count, step=iteration)
+            # 记录训练阶段的休眠神经元数量
+            if log_dict_neurons_train:
+                for neuron_layer, dead_neuron_count in log_dict_neurons_train.items():
+                    tf.summary.scalar(f'Train/DeadNeurons/{neuron_layer}', dead_neuron_count, step=iteration)
 
+            # 记录评估阶段的休眠神经元数量
+            if log_dict_neurons_eval:
+                for neuron_layer, dead_neuron_count in log_dict_neurons_eval.items():
+                    tf.summary.scalar(f'Eval/DeadNeurons/{neuron_layer}', dead_neuron_count, step=iteration)
 
-      self._summary_writer.flush()
+        self._summary_writer.flush()
     else:
-      summary = tf.compat.v1.Summary(
-          value=[
-              tf.compat.v1.Summary.Value(
-                  tag='Train/NumEpisodes', simple_value=num_episodes_train
-              ),
-              tf.compat.v1.Summary.Value(
-                  tag='Train/AverageReturns', simple_value=average_reward_train
-              ),
-              tf.compat.v1.Summary.Value(
-                  tag='Train/AverageStepsPerSecond',
-                  simple_value=average_steps_per_second,
-              ),
-              tf.compat.v1.Summary.Value(
-                  tag='Eval/NumEpisodes', simple_value=num_episodes_eval
-              ),
-              tf.compat.v1.Summary.Value(
-                  tag='Eval/AverageReturns', simple_value=average_reward_eval
-              ),
-          ]
-      )
-      self._summary_writer.add_summary(summary, iteration)
+        summary = tf.compat.v1.Summary(
+            value=[
+                tf.compat.v1.Summary.Value(tag='Train/NumEpisodes', simple_value=num_episodes_train),
+                tf.compat.v1.Summary.Value(tag='Train/AverageReturns', simple_value=average_reward_train),
+                tf.compat.v1.Summary.Value(tag='Train/AverageStepsPerSecond', simple_value=average_steps_per_second),
+                tf.compat.v1.Summary.Value(tag='Eval/NumEpisodes', simple_value=num_episodes_eval),
+                tf.compat.v1.Summary.Value(tag='Eval/AverageReturns', simple_value=average_reward_eval),
+            ]
+        )
 
-      # 处理休眠神经元记录（针对不使用 `self._summary_writer.as_default()` 的情况）
-      if log_dict_neurons:
-          for neuron_layer, dead_neuron_count in log_dict_neurons.items():
-              summary.value.add(
-                  tag=f'DeadNeurons/{neuron_layer}', simple_value=dead_neuron_count
-              )
-      self._summary_writer.add_summary(summary, iteration)
+        # 处理训练阶段的休眠神经元记录
+        if log_dict_neurons_train:
+            for neuron_layer, dead_neuron_count in log_dict_neurons_train.items():
+                summary.value.add(tag=f'Train/DeadNeurons/{neuron_layer}', simple_value=dead_neuron_count)
+
+        # 处理评估阶段的休眠神经元记录
+        if log_dict_neurons_eval:
+            for neuron_layer, dead_neuron_count in log_dict_neurons_eval.items():
+                summary.value.add(tag=f'Eval/DeadNeurons/{neuron_layer}', simple_value=dead_neuron_count)
+
+        self._summary_writer.add_summary(summary, iteration)
+
+
 
   def _log_experiment(self, iteration, statistics):
     """Records the results of the current iteration.
