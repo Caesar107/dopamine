@@ -27,19 +27,22 @@ import optax
 
 
 @functools.partial(jax.jit, static_argnames=['apply_fn'])
-def loss_fn(params, target, state, action, apply_fn):
-  """Calculates the loss."""
+def loss_fn(params, target, state, action, apply_fn, lambda_val, delta):
+    """Calculates the loss including the DNAR term."""
+    def q_online(state):
+        return apply_fn(params, state)
 
-  def q_online(state):
-    return apply_fn(params, state)
+    q_values = jax.vmap(q_online)(state).q_values
+    q_values = jnp.squeeze(q_values)
+    replay_chosen_q = jax.vmap(lambda x, y: x[y])(q_values, action)
+    original_loss = jnp.mean(jax.vmap(losses.huber_loss)(target, replay_chosen_q))
 
-  q_values = jax.vmap(q_online)(state).q_values
-  q_values = jnp.squeeze(q_values)
-  replay_chosen_q = jax.vmap(lambda x, y: x[y])(q_values, action)
-  loss = jnp.mean(jax.vmap(losses.huber_loss)(target, replay_chosen_q))
-  # TODO(all) add weight decay. See jax.example_libraries.optimizers.l2_norm
-  return loss
+    # Adding the DNAR regularization term
+    weights = params['your_weights_key']  # replace with the actual key for weights in params
+    dormant_neurons_penalty = jnp.sum(jnp.where(weights < delta, 1, 0))
+    total_loss = original_loss + lambda_val * dormant_neurons_penalty
 
+    return total_loss
 
 @functools.partial(jax.jit, static_argnames=['apply_fn', 'cumulative_gamma'])
 def get_gradients(
@@ -100,7 +103,12 @@ class RecycledDQNAgent(dqn_agent.JaxDQNAgent):
       weight_decay=0.0,
       summary_writer=None,
       is_debugging=False,
+      weight_init_scale=1.0,  # 新增：初始化权重的缩放因子
   ):
+     # 初始化网络
+    self.network_def = networks.ScalableDQNResNet
+    self.online_params = self.initialize_weights(weight_init_scale)
+
     network_name = network
     if network == 'resnet':
       network = networks.ScalableDQNResNet
@@ -142,6 +150,12 @@ class RecycledDQNAgent(dqn_agent.JaxDQNAgent):
       self.weight_recycler = weight_recyclers.BaseRecycler(network.layer_names)
     self._num_updates_per_train_step = num_updates_per_train_step
 
+  def initialize_weights(self, scale):
+        """初始化权重的方法，使用He初始化."""
+        init_fn = jax_initializers.he_normal()  # He初始化
+        input_shape = (self.input_shape,)  # 替换为您的输入形状
+        return init_fn(input_shape) * scale  # 根据缩放因子初始化权重
+  
   def _log_stats(self, log_dict, step):
     if log_dict is None:
       return
